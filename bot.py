@@ -1,89 +1,117 @@
-import asyncio
 import logging
-import aiohttp
+import asyncio
+import os
+import requests
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-
-# Replace with your actual Telegram bot token
-TELEGRAM_BOT_TOKEN = "7666636981:AAEjoz__qGOB5HkZUZR69afKThU-rTqHGI4"
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+)
 
 # Enable logging
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Dictionary to store user alerts in format: {chat_id: [(symbol, target_price, direction)]}
-user_alerts = {}
+# ✅ Global alert list
+alerts = []
 
-# Function to get the live price of a symbol from Binance
-async def get_price(symbol: str) -> float:
-    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            data = await response.json()
-            return float(data['price'])
-
-# Command: /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Welcome to the Crypto Alert Bot!\nUse /setalert SYMBOL TARGET_DIRECTION (e.g., /setalert BTCUSDT 65000 above)")
-
-# Command: /setalert BTCUSDT 65000 above
-async def setalert(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
+# ✅ Fetch price from Binance
+async def fetch_price(symbol: str) -> float:
     try:
-        symbol = context.args[0].upper()
-        target = float(context.args[1])
-        direction = context.args[2].lower()
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol.upper()}"
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        return float(data["price"])
+    except Exception as e:
+        logger.error(f"Failed to fetch price: {e}")
+        return 0.0
+
+# ✅ /start command
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 Welcome to Crypto Alert Bot!\n\n"
+        "Use /setalert <symbol> <above|below> <price>\n"
+        "Example: /setalert BTCUSDT above 60000"
+    )
+
+# ✅ /setalert command
+async def set_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if len(context.args) != 3:
+            await update.message.reply_text("❌ Usage: /setalert <symbol> <above|below> <price>")
+            return
+
+        symbol, direction, price = context.args
+        price = float(price)
         if direction not in ["above", "below"]:
-            raise ValueError("Direction must be 'above' or 'below'")
+            await update.message.reply_text("❌ Direction must be 'above' or 'below'")
+            return
 
-        if chat_id not in user_alerts:
-            user_alerts[chat_id] = []
-        user_alerts[chat_id].append((symbol, target, direction))
+        alert = {
+            "chat_id": update.effective_chat.id,
+            "symbol": symbol.upper(),
+            "target_price": price,
+            "direction": direction
+        }
 
-        await update.message.reply_text(f"Alert set for {symbol} to go {direction} {target}")
-        logger.info(f"Set alert: {chat_id}: {symbol} {direction} {target}")
+        alerts.append(alert)
 
-    except (IndexError, ValueError) as e:
-        await update.message.reply_text("Usage: /setalert SYMBOL TARGET_PRICE DIRECTION (above/below)")
+        await update.message.reply_text(
+            f"✅ Alert set for {symbol.upper()} {direction} {price}"
+        )
 
-# Background task to check alerts and send messages
+    except Exception as e:
+        logger.exception("Error in /setalert")
+        await update.message.reply_text("⚠️ Failed to set alert. Please try again.")
+
+# ✅ Check alerts loop
 async def check_alerts(application):
     while True:
         try:
-            for chat_id, alerts in list(user_alerts.items()):
-                for alert in alerts[:]:  # copy to avoid mutation issues
-                    symbol, target_price, direction = alert
-                    try:
-                        price = await get_price(symbol)
-                        condition_met = (direction == "above" and price >= target_price) or \
-                                        (direction == "below" and price <= target_price)
-                        if condition_met:
-                            await application.bot.send_message(
-                                chat_id=chat_id,
-                                text=f"🚨 Alert! {symbol} is now at {price} ({direction} {target_price})"
-                            )
-                            alerts.remove(alert)
-                    except Exception as e:
-                        logger.error(f"Error fetching price for {symbol}: {e}")
+            for alert in alerts.copy():
+                chat_id = alert["chat_id"]
+                symbol = alert["symbol"]
+                target_price = alert["target_price"]
+                direction = alert["direction"]
+
+                price = await fetch_price(symbol)
+
+                if (direction == "above" and price > target_price) or \
+                   (direction == "below" and price < target_price):
+                    await application.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"🚨 Alert! {symbol} is now at {price} ({direction} {target_price})"
+                    )
+                    alerts.remove(alert)
+
         except Exception as e:
-            logger.exception("Error checking alerts")
+            logger.exception("Error in alert checker")
 
-        await asyncio.sleep(10)  # check every 10 seconds
+        await asyncio.sleep(10)
 
+# ✅ Main function
 async def main():
-    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    token = os.getenv("7666636981:AAEjoz__qGOB5HkZUZR69afKThU-rTqHGI4")
+    if not token:
+        raise ValueError("TELEGRAM_BOT_TOKEN not set in environment variables.")
+
+    application = ApplicationBuilder().token(token).build()
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("setalert", setalert))
+    application.add_handler(CommandHandler("setalert", set_alert))
 
-    # Start background task
+    # Start alert checking loop
     asyncio.create_task(check_alerts(application))
 
-    logger.info("Bot started")
+    print("✅ Bot is running...")
     await application.run_polling()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(main())
+
+            
+  
