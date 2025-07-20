@@ -95,7 +95,7 @@ async def check_alerts(application):
 
 # ✅ Main function
 async def main():
-    token = os.getenv("7666636981:AAEjoz__qGOB5HkZUZR69afKThU-rTqHGI4")
+    token = os.getenv("TELEGRAM_BOT_TOKEN ")
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN not set in environment variables.")
 
